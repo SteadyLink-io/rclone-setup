@@ -137,8 +137,13 @@ mounts on the first free letter starting at `S:`. A Task Scheduler entry called
 `SteadyLink Mount` runs this at sign-in:
 
 ```powershell
-rclone mount steadylink: S: --vfs-cache-mode full --network-mode --no-console
+rclone mount steadylink: S: --vfs-cache-mode full --network-mode --use-server-modtime --dir-cache-time 30m --no-console
 ```
+
+The task starts rclone through `conhost.exe --headless`, so no console window
+opens. Windows 10 before version 2004 does not support that and shows rclone in
+a console window instead; leave it open. Because of `--network-mode`, the drive
+is listed under This PC > Network locations in File Explorer.
 
 **macOS.** `rclone mount` needs [macFUSE](https://osxfuse.github.io) or
 [FUSE-T](https://www.fuse-t.org), and Homebrew's rclone is built without it.
@@ -154,6 +159,13 @@ containers) it prints the command to run by hand.
 files as they would on a normal disk. Changes upload in the background shortly
 after a file is closed. The cache lives in rclone's cache directory and old
 entries are dropped after 24 hours.
+
+`--use-server-modtime` takes each file's modified time from the folder listing.
+Without it, rclone asks SteadyLink about every file separately when you open a
+folder, which makes large folders slow. Times shown on the drive are when the file
+was uploaded. `--dir-cache-time 30m` keeps folder listings for 30 minutes; files
+added from somewhere else can take that long to show up. Scheduled backups do not
+use either option, so `copy` and `sync` still compare real modification times.
 
 ## Scheduled backup
 
@@ -220,6 +232,16 @@ on its own. For large syncs, `--transfers 4 --checkers 8` lowers the request rat
 **The drive does not appear (Windows).** Check `%LOCALAPPDATA%\SteadyLink\logs\mount.log`.
 "cannot find winfsp" means WinFsp is missing. Run the task by hand with
 `Start-ScheduledTask 'SteadyLink Mount'`.
+
+**The drive disappeared after I closed a blank terminal window.** That window was
+rclone; closing it unmounts the drive. Older versions of this script let it
+appear on Windows 11. Run the installer again to update the task, or bring the
+drive back with `Start-ScheduledTask 'SteadyLink Mount'`. The same re-run also
+picks up `--use-server-modtime`, which makes large folders open faster.
+
+**Folders on the drive are slow to open.** Drives set up by older versions of this
+script look up every file one by one. Run the installer again; it updates the
+mount with `--use-server-modtime` (see [Mounting](#mounting)).
 
 **Mount fails on Linux with "fusermount: not found".** Install `fuse3`.
 

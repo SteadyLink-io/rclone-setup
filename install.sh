@@ -590,7 +590,7 @@ setup_mount_linux() {
 	if ! has_systemd_user; then
 		warn "no systemd user session here (common in WSL and containers), so the mount cannot start at login."
 		say "Mount by hand with:"
-		say "    rclone mount $REMOTE: ~/SteadyLink --vfs-cache-mode full --daemon"
+		say "    rclone mount $REMOTE: ~/SteadyLink --vfs-cache-mode full --use-server-modtime --daemon"
 		return 0
 	fi
 	pick_mount_dir || return 0
@@ -603,7 +603,7 @@ setup_mount_linux() {
 		printf '%s\n' "Documentation=$REPO_URL"
 		printf '%s\n' "Wants=network-online.target" "After=network-online.target" ""
 		printf '%s\n' "[Service]" "Type=notify"
-		printf 'ExecStart=%s mount %s %s --config %s --vfs-cache-mode full --vfs-cache-max-age 24h --dir-cache-time 5m --log-file %s --log-level NOTICE\n' \
+		printf 'ExecStart=%s mount %s %s --config %s --vfs-cache-mode full --vfs-cache-max-age 24h --dir-cache-time 30m --use-server-modtime --log-file %s --log-level NOTICE\n' \
 			"$(sd_quote "$RCLONE")" "$REMOTE:" "$(sd_quote "$MOUNT_DIR")" "$(sd_quote "$CONFIG_FILE")" "$(sd_quote "$LOG_DIR/mount.log")"
 		printf 'ExecStop=%s -u %s\n' "$(sd_quote "$fusermount")" "$(sd_quote "$MOUNT_DIR")"
 		printf '%s\n' "Restart=on-failure" "RestartSec=15" ""
@@ -641,7 +641,7 @@ setup_mount_macos() {
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>ThrottleInterval</key><integer>30</integer>'
 	set -- "$RCLONE" "$method" "$REMOTE:" "$MOUNT_DIR" --config "$CONFIG_FILE" \
-		--vfs-cache-mode full --vfs-cache-max-age 24h --dir-cache-time 5m --log-level NOTICE
+		--vfs-cache-mode full --vfs-cache-max-age 24h --dir-cache-time 30m --use-server-modtime --log-level NOTICE
 	if [ "$method" = mount ]; then set -- "$@" --volname SteadyLink; fi
 	write_launch_agent io.steadylink.mount "$LOG_DIR/mount.log" "$schedule" "$@"
 	sleep 3

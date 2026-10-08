@@ -1,0 +1,40 @@
+# Copies a folder to SteadyLink once an hour with rclone.
+# Put your app key in steadylink.env (see steadylink.env.example), then:
+#   docker compose up -d
+
+services:
+  steadylink-backup:
+    image: rclone/rclone:1.75.1
+    restart: unless-stopped
+    env_file: steadylink.env
+    environment:
+      # The rclone remote "steadylink", defined with environment variables
+      # instead of a config file. The key comes from steadylink.env.
+      RCLONE_CONFIG_STEADYLINK_TYPE: s3
+      RCLONE_CONFIG_STEADYLINK_PROVIDER: Other
+      RCLONE_CONFIG_STEADYLINK_ENDPOINT: https://api.steadylink.io/s3
+      RCLONE_CONFIG_STEADYLINK_REGION: auto
+      RCLONE_CONFIG_STEADYLINK_FORCE_PATH_STYLE: "true"
+      # Where the files go: steadylink:<bucket>/<folder>
+      DEST: steadylink:my-bucket/nas
+      # copy keeps files you delete locally. sync removes them in SteadyLink
+      # too, moving them to .deleted/ in the same bucket first.
+      MODE: copy
+      INTERVAL_SECONDS: "3600"
+    volumes:
+      # The folder to back up, mounted read-only.
+      - /path/to/folder:/data:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        case "$$MODE" in
+          copy) extra="" ;;
+          sync) extra="--backup-dir $${DEST%%/*}/.deleted/$${DEST#*/}" ;;
+          *) echo "MODE must be copy or sync" >&2; exit 1 ;;
+        esac
+        while :; do
+          echo "$$(date -u +%FT%TZ) $$MODE /data -> $$DEST"
+          rclone "$$MODE" /data "$$DEST" $$extra --log-level INFO --stats 0 --transfers 4 || echo "run failed, retrying next interval" >&2
+          sleep "$$INTERVAL_SECONDS"
+        done

@@ -1,0 +1,74 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck --version && shellcheck -s sh install.sh
+      - name: parse with dash and bash
+        run: dash -n install.sh && bash -n install.sh
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $results = Invoke-ScriptAnalyzer -Path install.ps1 -Settings PSScriptAnalyzerSettings.psd1
+          $results | Format-Table -AutoSize -Wrap
+          if ($results) { exit 1 }
+      - name: parse with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          $errors | ForEach-Object { $_.ToString() }
+          if ($errors) { exit 1 }
+
+  # Installs rclone, creates the remote with a made-up key, and expects the
+  # plain-language "unknown key" message from the connection check.
+  smoke:
+    needs: [shell, powershell]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      STEADYLINK_ACCESS_KEY_ID: SLCITESTNOTAREALKEY0
+      STEADYLINK_SECRET_ACCESS_KEY: not-a-real-secret-0000000000000000000000
+      STEADYLINK_NONINTERACTIVE: "1"
+      STEADYLINK_REMOTE: citest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          code=0
+          sh install.sh > out.txt 2>&1 || code=$?
+          cat out.txt
+          test "$code" -eq 1
+          grep -q "does not know this access key ID" out.txt
+          if grep -qF "$STEADYLINK_SECRET_ACCESS_KEY" out.txt; then echo "secret printed"; exit 1; fi
+          rclone config delete citest
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $out = & { Get-Content -Raw install.ps1 | Invoke-Expression } *>&1 | Out-String
+          $out
+          if ($out -notmatch 'does not know this access key ID') { throw 'expected the unknown key message' }
+          if ($out.Contains($env:STEADYLINK_SECRET_ACCESS_KEY)) { throw 'secret printed' }
+          rclone config delete citest

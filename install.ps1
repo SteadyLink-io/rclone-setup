@@ -376,6 +376,36 @@ param(
     # ------------------------------------------------------------------
     # Scheduled tasks
 
+    # winget puts a symlink in WinGet\Links. Tasks point at the real file.
+    function Resolve-RclonePath([string]$Path) {
+        $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+        if ($item -and $item.LinkType -and $item.Target) {
+            $target = [string](@($item.Target)[0])
+            if (-not [IO.Path]::IsPathRooted($target)) { $target = Join-Path (Split-Path -Parent $Path) $target }
+            if (Test-Path -LiteralPath $target -PathType Leaf) { return (Resolve-Path -LiteralPath $target).ProviderPath }
+        }
+        return $Path
+    }
+
+    # On Windows 11 with Windows Terminal as the default terminal, a task that
+    # starts a console program opens an empty terminal window, and closing it
+    # kills the program. conhost --headless gives the program a console with no
+    # window. It needs Windows 10 2004 (build 19041) or later.
+    function Get-HeadlessHost {
+        $conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+        if ([Environment]::OSVersion.Version.Build -ge 19041 -and (Test-Path -LiteralPath $conhost)) { return $conhost }
+        return $null
+    }
+
+    function Get-SteadyLinkAction([string]$Program, [string[]]$Arguments) {
+        $line = ($Arguments | ForEach-Object { ConvertTo-Argument $_ }) -join ' '
+        $conhost = Get-HeadlessHost
+        if ($conhost) {
+            return New-ScheduledTaskAction -Execute $conhost -Argument "--headless $(ConvertTo-Argument $Program) $line"
+        }
+        return New-ScheduledTaskAction -Execute $Program -Argument $line
+    }
+
     function Register-SteadyLinkTask([string]$Name, $Action, $Trigger, [TimeSpan]$TimeLimit) {
         $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
@@ -433,6 +463,13 @@ param(
             }
         }
 
+        # Stop a mount from an earlier run so its drive letter can be reused.
+        $old = Get-ScheduledTask -TaskName "${TaskPrefix}Mount" -ErrorAction SilentlyContinue
+        if ($old -and $old.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName "${TaskPrefix}Mount" -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+
         $default = Get-FreeDriveLetter 'S'
         if (-not $default) { Warn 'no free drive letter.'; return }
         while ($true) {
@@ -444,9 +481,10 @@ param(
 
         New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
         $arguments = @('mount', "${Remote}:", "${letter}:", '--vfs-cache-mode', 'full', '--network-mode',
-            '--vfs-cache-max-age', '24h', '--dir-cache-time', '5m', '--no-console',
+            '--vfs-cache-max-age', '24h', '--dir-cache-time', '30m', '--use-server-modtime', '--no-console',
             '--config', $S.ConfigFile, '--log-file', (Join-Path $LogDir 'mount.log'), '--log-level', 'NOTICE')
-        $action = New-ScheduledTaskAction -Execute $S.Rclone -Argument (($arguments | ForEach-Object { ConvertTo-Argument $_ }) -join ' ')
+        $exe = Resolve-RclonePath $S.Rclone
+        $action = Get-SteadyLinkAction $exe $arguments
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
         Stop-ScheduledTask -TaskName "${TaskPrefix}Mount" -ErrorAction SilentlyContinue
         Register-SteadyLinkTask -Name 'Mount' -Action $action -Trigger $trigger -TimeLimit ([TimeSpan]::Zero)
@@ -458,7 +496,14 @@ param(
         }
         if ($mounted) { Ok "SteadyLink is on ${letter}:" }
         else { Warn "the drive has not appeared yet. Check $(Join-Path $LogDir 'mount.log')" }
+        Note "${letter}: is under This PC > Network locations in File Explorer."
         Note "Mounts at sign-in (Task Scheduler: '${TaskPrefix}Mount'). Log: $(Join-Path $LogDir 'mount.log')"
+        if (-not (Get-HeadlessHost)) {
+            Note 'This version of Windows shows rclone in a console window. Leave it open: closing it removes the drive.'
+        }
+        if ($exe -ne $S.Rclone) {
+            Note 'If winget upgrades rclone, run this script again so the task uses the new copy.'
+        }
     }
 
     # ------------------------------------------------------------------
@@ -509,20 +554,21 @@ param(
             '--exclude', 'desktop.ini', '--exclude', 'Thumbs.db', '--exclude', '~$*')
         if ($mode -eq 'sync') { $arguments += @('--backup-dir', "${Remote}:$bucket/.deleted/$destPath") }
 
-        # The task runs a small script so it stays readable in Task Scheduler
-        # and runs without a console window.
+        # The task runs a small script so it stays readable in Task Scheduler.
+        # Get-SteadyLinkAction keeps it from opening a console window.
         New-Item -ItemType Directory -Path $JobDir, $LogDir -Force | Out-Null
         $runner = Join-Path $JobDir "backup-$job.ps1"
         $lines = @(
             "# SteadyLink backup of $source to $dest",
             "# Created by $RepoUrl. Remove with the -Uninstall switch.",
-            "& $(ConvertTo-PSLiteral $S.Rclone) $(($arguments | ForEach-Object { ConvertTo-PSLiteral $_ }) -join ' ')",
+            "& $(ConvertTo-PSLiteral (Resolve-RclonePath $S.Rclone)) $(($arguments | ForEach-Object { ConvertTo-PSLiteral $_ }) -join ' ')",
             'exit $LASTEXITCODE'
         )
         Set-Content -Path $runner -Value $lines -Encoding UTF8
 
-        $psArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File $(ConvertTo-Argument $runner)"
-        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $action = Get-SteadyLinkAction $powershell @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-WindowStyle', 'Hidden', '-File', $runner)
         if ($when -eq 'hourly') {
             $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).Date.AddHours((Get-Date).Hour + 1) -RepetitionInterval (New-TimeSpan -Hours 1)
         } else {
@@ -532,6 +578,9 @@ param(
         Ok "backup task '${TaskPrefix}Backup $job' created"
         Note "Log: $log"
         Note "Script: $runner"
+        if ((Resolve-RclonePath $S.Rclone) -ne $S.Rclone) {
+            Note 'If winget upgrades rclone, run this script again so the backup uses the new copy.'
+        }
         if (Confirm 'Run the first backup now, in the background?' $false) {
             Start-ScheduledTask -TaskName "${TaskPrefix}Backup $job"
             Ok "started. Follow it with: Get-Content -Wait '$log'"

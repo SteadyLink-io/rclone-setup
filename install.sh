@@ -733,7 +733,12 @@ offer_backup() {
 		if ! has_systemd_user; then
 			warn "no systemd user session here, so the job cannot be scheduled automatically."
 			say "Add this to your crontab (crontab -e) instead:"
-			printf '    0 %s * * * %s\n' "$([ "$when" = hourly ] && printf '*' || printf '%s' "$when")" "$*"
+			cron_line=
+			for arg in "$@"; do cron_line="$cron_line $(sh_quote "$arg")"; done
+			# cron treats a bare % as a newline.
+			cron_line=$(printf '%s' "$cron_line" | sed 's/%/\\%/g')
+			if [ "$when" = hourly ]; then cron_hour='*'; else cron_hour=$when; fi
+			printf '    0 %s * * *%s\n' "$cron_hour" "$cron_line"
 			return 0
 		fi
 		mkdir -p "$UNIT_DIR"

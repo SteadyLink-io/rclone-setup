@@ -309,7 +309,9 @@ install_user_local() {
 	download "https://downloads.rclone.org/$version/SHA256SUMS" "$TMP/SHA256SUMS"
 	expected=$(awk -v f="$zip" '$2 == f { print $1 }' "$TMP/SHA256SUMS")
 	actual=$(sha256_of "$TMP/$zip") || die "sha256sum or shasum is needed to check the download"
-	[ -n "$expected" ] && [ "$expected" = "$actual" ] || die "checksum mismatch for $zip; not installing it"
+	if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+		die "checksum mismatch for $zip; not installing it"
+	fi
 	ok "checksum matches SHA256SUMS"
 	unzip -q "$TMP/$zip" -d "$TMP"
 	mkdir -p "$HOME/.local/bin"

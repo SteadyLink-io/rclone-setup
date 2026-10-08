@@ -406,11 +406,17 @@ param(
         return New-ScheduledTaskAction -Execute $Program -Argument $line
     }
 
-    function Register-SteadyLinkTask([string]$Name, $Action, $Trigger, [TimeSpan]$TimeLimit) {
+    function Register-SteadyLinkTask([string]$Name, $Action, $Trigger, [TimeSpan]$TimeLimit, [switch]$KeepRunning) {
         $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
             -MultipleInstances IgnoreNew -ExecutionTimeLimit $TimeLimit
+        if ($KeepRunning) {
+            # Restart quickly if rclone dies. The repeating trigger in Install-Mount covers
+            # kills that Task Scheduler doesn't count as failures.
+            $settings.RestartCount = 999
+            $settings.RestartInterval = 'PT1M'
+        }
         $task = New-ScheduledTask -Action $Action -Trigger $Trigger -Principal $principal -Settings $settings `
             -Description "Created by $RepoUrl"
         Register-ScheduledTask -TaskName "$TaskPrefix$Name" -InputObject $task -Force | Out-Null
@@ -485,9 +491,14 @@ param(
             '--config', $S.ConfigFile, '--log-file', (Join-Path $LogDir 'mount.log'), '--log-level', 'NOTICE')
         $exe = Resolve-RclonePath $S.Rclone
         $action = Get-SteadyLinkAction $exe $arguments
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
+        # Start at sign-in, and check every 5 minutes so the drive comes back if rclone is
+        # killed. IgnoreNew means a check does nothing while the mount is running.
+        $trigger = @(
+            (New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)),
+            (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 5))
+        )
         Stop-ScheduledTask -TaskName "${TaskPrefix}Mount" -ErrorAction SilentlyContinue
-        Register-SteadyLinkTask -Name 'Mount' -Action $action -Trigger $trigger -TimeLimit ([TimeSpan]::Zero)
+        Register-SteadyLinkTask -Name 'Mount' -Action $action -Trigger $trigger -TimeLimit ([TimeSpan]::Zero) -KeepRunning
         Start-ScheduledTask -TaskName "${TaskPrefix}Mount"
         $mounted = $false
         for ($i = 0; $i -lt 15 -and -not $mounted; $i++) {

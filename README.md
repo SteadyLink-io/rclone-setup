@@ -145,6 +145,10 @@ opens. Windows 10 before version 2004 does not support that and shows rclone in
 a console window instead; leave it open. Because of `--network-mode`, the drive
 is listed under This PC > Network locations in File Explorer.
 
+The task also checks every 5 minutes and restarts within a minute if rclone
+stops, so the drive comes back on its own. To start it right away, run
+`Start-ScheduledTask "SteadyLink Mount"`.
+
 **macOS.** `rclone mount` needs [macFUSE](https://osxfuse.github.io) or
 [FUSE-T](https://www.fuse-t.org), and Homebrew's rclone is built without it.
 If neither is set up, the script uses `rclone nfsmount` instead, which goes
